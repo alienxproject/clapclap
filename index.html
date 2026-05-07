@@ -260,18 +260,57 @@
 </footer>
 
 <script>
-// ════════════════════════════════════════════
-//  KONFIGURASI — Sesuaikan path proxy jika perlu
-// ════════════════════════════════════════════
-const PROXY = 'proxy.php';          // file proxy.php harus 1 folder dengan index.html
-const API_KEY = '455dnfwukafo9b64s'; // disimpan di proxy.php, tidak diekspos ke browser
+const API_KEY = '455dnfwukafo9b64s';
+const API_BASE = 'https://lulustream.com/api';
 
-// ── apiFetch: panggil via proxy lokal ──
+// ── Multi-proxy fallback (bekerja di GitHub Pages tanpa backend) ──
+const PROXIES = [
+  {
+    name: 'corsproxy.io',
+    wrap: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    parse: r => r.json()
+  },
+  {
+    name: 'allorigins',
+    wrap: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    parse: r => r.json().then(d => JSON.parse(d.contents))
+  },
+  {
+    name: 'cors.sh',
+    wrap: url => url,
+    headers: { 'x-cors-api-key': 'temp_demo', 'Origin': 'https://streamx.github.io' },
+    parse: r => r.json()
+  }
+];
+
+let workingProxyIdx = 0;
+
 async function apiFetch(endpoint, params = {}) {
-  const qs = new URLSearchParams({ endpoint, ...params }).toString();
-  const res = await fetch(`${PROXY}?${qs}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  params.key = API_KEY;
+  const url = `${API_BASE}/${endpoint}?${new URLSearchParams(params)}`;
+
+  // Coba proxy satu per satu sampai berhasil
+  for (let i = 0; i < PROXIES.length; i++) {
+    const idx = (workingProxyIdx + i) % PROXIES.length;
+    const proxy = PROXIES[idx];
+    try {
+      const fetchOpts = proxy.headers ? { headers: proxy.headers } : {};
+      const res = await Promise.race([
+        fetch(proxy.wrap(url), fetchOpts),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+      ]);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await proxy.parse(res);
+      if (data && data.status) {
+        workingProxyIdx = idx; // Simpan proxy yang berhasil
+        return data;
+      }
+      throw new Error('Response tidak valid');
+    } catch (e) {
+      console.warn(`Proxy ${proxy.name} gagal:`, e.message);
+      if (i === PROXIES.length - 1) throw new Error('Semua proxy gagal. Coba buka langsung: ' + url);
+    }
+  }
 }
 
 // ════ STATE ════
@@ -330,8 +369,9 @@ async function loadVideos(p = 1) {
     showErr(
       'Gagal memuat video.<br><br>' +
       '<b>Kemungkinan penyebab:</b><br>' +
-      '• File <code>proxy.php</code> belum diupload ke hosting<br>' +
-      '• Hosting tidak mendukung PHP / cURL<br>' +
+      '• Semua proxy CORS sedang down — coba refresh halaman<br>' +
+      '• Koneksi internet bermasalah<br>' +
+      '• API Key tidak valid<br>' +
       '• Buka browser console (F12) untuk detail error',
       e.message
     );
